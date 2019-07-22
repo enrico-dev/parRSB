@@ -4,14 +4,15 @@
 #include <stdio.h>
 #include <time.h>
 #include <limits.h>
+#include <stdlib.h>
 
 // A comparator function used by qsort 
 int compare(const void * a, const void * b) 
 { 
-    return ( *(GenmapScalar*)a - *(GenmapScalar*)b ); 
+    return ( *(GenmapScalar*)a > *(GenmapScalar*)b ); 
 } 
 
-GenmapScalar g_min,g_max;
+GenmapScalar g_min,g_max,g_delta;
 
 void parRSBHistoSortLocalSort(GenmapHandle h,GenmapComm c,int field,buffer *buf0) {
   GenmapElements elements = GenmapGetElements(h);
@@ -42,7 +43,7 @@ int parRSBHistoSortReachedThreshold(GenmapHandle h,GenmapComm c,GenmapLong *coun
 
   if(rank==0) {
     for(int i=0; i<nsplitters; i++) {
-      if(abs(count[i]-i*partition_size)>threshold) {
+      if(abs(count[i]-(i+1)*partition_size)>threshold) {
         converged=0;
         break;
       }
@@ -87,9 +88,9 @@ void parRSBHistoSortInitProbes(GenmapHandle h,GenmapComm c,int field) {
 
   if(field==GENMAP_FIEDLER){
     // pick 3*(size-1) splitters as probes
-    GenmapScalar delta=(g_max-g_min)/size;
+    g_delta=(g_max-g_min)/size;
     for(int i=0; i<nsplitters; i++) {
-      h->histogram->probes[i]=g_min+(i+1)*delta;
+      h->histogram->probes[i]=g_min+(i+1)*g_delta;
     }
 
     // initialize the count to zero
@@ -134,32 +135,43 @@ void parRSBHistoSortUpdateProbes(GenmapHandle h,GenmapComm c,
   GenmapLong lelgt = GenmapGetNGlobalElements(h);
   GenmapInt partition_size=lelgt/size;
 
-  GenmapLong *current = h->histogram->count;
-  GenmapScalar *probes = h->histogram->probes;
-
   GenmapScalar gradient;
 
   if(rank==0) {
     if(field == GENMAP_FIEDLER) {
       for(int i=0; i<nsplitters; i++) {
-        if(abs(current[i]-(i+1)*partition_size)>abs(count[i]-(i+1)*partition_size)) {
+        if(abs(count[i]-(i+1)*partition_size)<abs(h->histogram->count[i]-(i+1)*partition_size)) {
           //update
           //printf("I am here: %d %lld %lld",i,current[3*i-2],count[3*i-2]);
-          current[i]=count[i];
+          h->histogram->count[i]=count[i];
         }
       }
       // Now adjust probes based on linear spline
       GenmapScalar p_probes=g_min;
       GenmapLong p_count=0;
       for(int i=0; i<nsplitters; i++) {
+        if(abs(h->histogram->count[i]-(i+1)*partition_size)<threshold)
+          continue;
         GenmapScalar old_probe=h->histogram->probes[i];
-        GenmapScalar gradient=(count[i]-p_count)/(probes[i]-p_probes);
-        h->histogram->probes[i]=((i+1)*partition_size-p_count)/gradient+p_probes;
-        p_count=count[i];
+        GenmapScalar gradient=(h->histogram->count[i]-p_count)/(h->histogram->probes[i]-p_probes);
+        GenmapScalar increment=((i+1)*partition_size-p_count)/gradient;
+        h->histogram->probes[i]=increment+p_probes;
+        p_count=h->histogram->count[i];
         p_probes=old_probe;
       }
-      // Not sort the probes
+      // Now sort the probes
       qsort(h->histogram->probes,nsplitters,sizeof(GenmapScalar),compare); 
+      for(int i=1; i<nsplitters; i++) {
+        if(fabs(h->histogram->probes[i-1]-h->histogram->probes[i])<1e-8)
+          if(i==1) {
+            h->histogram->probes[i-1]/=2;
+          } else {
+            h->histogram->probes[i-1]=(h->histogram->probes[i-2]+h->histogram->probes[i])/2;
+          }
+      }
+      for(int i=0; i<nsplitters; i++) {
+        printf("probes[%d]=%lf\n",i,h->histogram->probes[i]);
+      }
     }
   }
 }
@@ -246,25 +258,31 @@ void parRSBHistogramSort(GenmapHandle h,GenmapComm c,int field,buffer *buf0) {
   int iter=0;
   while(!parRSBHistoSortReachedThreshold(h,c,count,threshold,field)){
     parRSBHistoSortUpdateProbes(h,c,count,threshold,field);
+#if 0
     if(rank==0)
       for(int i=0; i<nsplitters; i++){
         printf("%d: %d probe[%d]= " GenmapScalarFormat "\n",rank,iter,i,h->histogram->probes[i]);
       }
+#endif
     if(rank==0) printf("Update probes: done\n");
 
     // TODO: Bcast probes
     GenmapBcast(c,h->histogram->probes,nsplitters,GENMAP_LONG);
+#if 0
     if(rank==1)
       for(int i=0; i<nsplitters; i++){
         printf("%d: %d probe[%d]= " GenmapScalarFormat "\n",rank,iter,i,h->histogram->probes[i]);
       }
+#endif
     if(rank==0) printf("Bcast: done\n");
 
     parRSBHistoSortUpdateCounts(h,nsplitters,field);
+#if 0
     if(rank==0)
       for(int i=0; i<nsplitters; i++){
         printf("%d: %d count[%d]= " GenmapLongFormat "\n",rank,iter,i,h->histogram->count[i]);
       }
+#endif
     if(rank==0) printf("Update counts: done\n");
 
     // global reduction
