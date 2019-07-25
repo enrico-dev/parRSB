@@ -96,6 +96,7 @@ void GenmapBinSort(GenmapHandle h, int field, buffer *buf0);
 //
 // HistoSort
 //
+void parRSBHypercubeQuickSort(GenmapHandle h,GenmapComm c,int field,buffer *buf0,int level);
 void parRSBHistogramSort(GenmapHandle h,GenmapComm c,int field,buffer *buf0);
 
 struct parRSBHistogram_private {
